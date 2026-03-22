@@ -8,15 +8,17 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
+from io import BytesIO
 
-import fitz  # PyMuPDF
 import pdfplumber
+import pymupdf
+from pydantic import BaseModel, Field
 
-from renderer import render
-from schema import Circuit, Datasheet, Package, Pin, Spec, TruthTable, TruthTableRow
+# ── Configuration ─────────────────────────────────────────────────────────────
 
 DEFAULT_DPI = int(os.environ.get("DATASHEET_DPI", "150"))
 DEFAULT_MAX_PAGES = int(os.environ.get("DATASHEET_MAX_PAGES", "20"))
@@ -47,6 +49,139 @@ PAGE_SIGNALS: dict[str, list[str]] = {
     ],
 }
 
+# ── Models ────────────────────────────────────────────────────────────────────
+
+class Pin(BaseModel):
+    number: str
+    name: str
+    type: str = ""  # "I", "O", "I/O", "Power", "GND", "NC"
+    description: str = ""
+
+
+class Spec(BaseModel):
+    parameter: str
+    min: str | None = None
+    typ: str | None = None
+    max: str | None = None
+    unit: str | None = None
+    conditions: str | None = None
+
+
+class Package(BaseModel):
+    name: str
+    dimensions: str | None = None
+    theta_ja: str | None = None  # °C/W
+
+
+class TruthTableRow(BaseModel):
+    inputs: dict[str, str] = Field(default_factory=dict)
+    outputs: dict[str, str] = Field(default_factory=dict)
+    notes: str | None = None
+
+
+class TruthTable(BaseModel):
+    name: str
+    rows: list[TruthTableRow] = Field(default_factory=list)
+
+
+class Circuit(BaseModel):
+    name: str
+    description: str
+
+
+class Datasheet(BaseModel):
+    part_number: str = ""
+    manufacturer: str = ""
+    description: str = ""
+    features: list[str] = Field(default_factory=list)
+    pins: list[Pin] = Field(default_factory=list)
+    absolute_max_ratings: list[Spec] = Field(default_factory=list)
+    specs: list[Spec] = Field(default_factory=list)
+    package: Package | None = None
+    truth_tables: list[TruthTable] = Field(default_factory=list)
+    typical_circuits: list[Circuit] = Field(default_factory=list)
+
+# ── Renderer ──────────────────────────────────────────────────────────────────
+
+def _spec_table(specs: list[Spec]) -> str:
+    rows = [
+        "| Parameter | Min | Typ | Max | Unit | Conditions |",
+        "|-----------|-----|-----|-----|------|------------|",
+    ]
+    for s in specs:
+        rows.append(
+            f"| {s.parameter} | {s.min or ''} | {s.typ or ''} | {s.max or ''}"
+            f" | {s.unit or ''} | {s.conditions or ''} |"
+        )
+    return "\n".join(rows)
+
+
+def _truth_table_md(tt: TruthTable) -> str:
+    if not tt.rows:
+        return f"### {tt.name}\n\n*(no rows)*"
+    all_inputs = list(dict.fromkeys(k for row in tt.rows for k in row.inputs))
+    all_outputs = list(dict.fromkeys(k for row in tt.rows for k in row.outputs))
+    has_notes = any(row.notes for row in tt.rows)
+    headers = all_inputs + all_outputs + (["Notes"] if has_notes else [])
+    lines = [
+        f"### {tt.name}", "",
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in tt.rows:
+        cells = [row.inputs.get(h, "") for h in all_inputs]
+        cells += [row.outputs.get(h, "") for h in all_outputs]
+        if has_notes:
+            cells.append(row.notes or "")
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def render(ds: Datasheet) -> str:
+    parts: list[str] = []
+
+    title = ds.part_number or "Unknown Part"
+    if ds.manufacturer:
+        title += f" — {ds.manufacturer}"
+    parts.append(f"# {title}")
+
+    if ds.description:
+        parts.append(f"\n## Description\n\n{ds.description}")
+
+    if ds.features:
+        parts.append("\n## Features\n\n" + "\n".join(f"- {f}" for f in ds.features))
+
+    if ds.pins:
+        rows = ["| Pin | Name | Type | Description |", "|-----|------|------|-------------|"]
+        for p in ds.pins:
+            rows.append(f"| {p.number} | {p.name} | {p.type} | {p.description} |")
+        parts.append("\n## Pin Configuration\n\n" + "\n".join(rows))
+
+    if ds.absolute_max_ratings:
+        parts.append("\n## Absolute Maximum Ratings\n\n" + _spec_table(ds.absolute_max_ratings))
+
+    if ds.specs:
+        parts.append("\n## Electrical Characteristics\n\n" + _spec_table(ds.specs))
+
+    if ds.truth_tables:
+        parts.append("\n## Truth Tables\n\n" + "\n\n".join(_truth_table_md(tt) for tt in ds.truth_tables))
+
+    if ds.package:
+        pkg = ds.package
+        lines = [f"**Package:** {pkg.name}"]
+        if pkg.dimensions:
+            lines.append(f"**Dimensions:** {pkg.dimensions}")
+        if pkg.theta_ja:
+            lines.append(f"**θJA:** {pkg.theta_ja} °C/W")
+        parts.append("\n## Package Information\n\n" + "\n\n".join(lines))
+
+    if ds.typical_circuits:
+        blocks = [f"### {c.name}\n\n{c.description}" for c in ds.typical_circuits]
+        parts.append("\n## Typical Application Circuits\n\n" + "\n\n".join(blocks))
+
+    return "\n".join(parts)
+
+# ── PDF Reader ────────────────────────────────────────────────────────────────
 
 def _detect_page_types(text: str) -> list[str]:
     lower = text.lower()
@@ -65,7 +200,7 @@ def _select_pages(pages_text: list[str], max_pages: int) -> tuple[list[int], str
     if max_pages > 0 and len(selected) > max_pages:
         skipped = len(selected) - max_pages
         selected = selected[:max_pages]
-        warning = f"Note: {skipped} additional relevant page(s) skipped (DATASHEET_MAX_PAGES={max_pages})"
+        warning = f"{skipped} additional relevant page(s) skipped (DATASHEET_MAX_PAGES={max_pages})"
     return selected, warning
 
 
@@ -85,83 +220,76 @@ def _table_to_markdown(table: list[list[str | None]]) -> str:
     return "\n".join(lines)
 
 
-def cmd_read(path: str, max_pages: int = DEFAULT_MAX_PAGES) -> None:
-    """Extract text and tables from a PDF, print to stdout for Claude to read."""
+def read_pdf(
+    path: str,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    dpi: int = DEFAULT_DPI,
+) -> tuple[list[dict], str | None]:
+    """
+    Read a datasheet PDF and return content items plus an optional truncation warning.
+
+    Each item is one of:
+      {"type": "text",  "page": int, "label": str, "text": str}
+      {"type": "image", "page": int, "label": str, "data": str}  # base64 PNG
+    """
     with pdfplumber.open(path) as pdf:
-        pages_text = [p.extract_text() or "" for p in pdf.pages]
+        pages_text   = [p.extract_text() or "" for p in pdf.pages]
         pages_tables = [p.extract_tables() or [] for p in pdf.pages]
-        pages_chars = [len(p.chars) for p in pdf.pages]
+        pages_chars  = [len(p.chars) for p in pdf.pages]
 
     selected, warning = _select_pages(pages_text, max_pages)
+    doc = pymupdf.open(path)
+    items: list[dict] = []
 
     for idx in selected:
-        text = pages_text[idx].strip()
-        tables = pages_tables[idx]
+        text       = pages_text[idx].strip()
+        tables     = pages_tables[idx]
         char_count = pages_chars[idx]
-        page_types = _detect_page_types(text)
-        label = ", ".join(page_types) if page_types else "header"
-
-        print(f"\n--- Page {idx + 1} [{label}] ---")
+        label      = ", ".join(_detect_page_types(text)) or "header"
 
         if char_count < DIAGRAM_CHAR_THRESHOLD:
-            print(f"(diagram/schematic page — no extractable text)")
+            page = doc[idx]
+            mat  = pymupdf.Matrix(dpi / 72, dpi / 72)
+            pix  = page.get_pixmap(matrix=mat, alpha=False)
+            data = base64.standard_b64encode(BytesIO(pix.tobytes("png")).getvalue()).decode()
+            items.append({"type": "image", "page": idx + 1, "label": label, "data": data})
         else:
+            parts = [f"--- Page {idx + 1} [{label}] ---"]
             if text:
-                print(text)
+                parts.append(text)
             for i, table in enumerate(tables):
                 md = _table_to_markdown(table)
                 if md:
-                    print(f"\nTable {i + 1}:\n{md}")
+                    parts.append(f"\nTable {i + 1}:\n{md}")
+            items.append({"type": "text", "page": idx + 1, "label": label, "text": "\n".join(parts)})
 
+    doc.close()
+    return items, warning
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def cmd_read(path: str, max_pages: int = DEFAULT_MAX_PAGES) -> None:
+    items, warning = read_pdf(path, max_pages=max_pages)
+    for item in items:
+        if item["type"] == "text":
+            print(item["text"])
+        else:
+            print(f"\n--- Page {item['page']} [{item['label']}] (diagram — not renderable in terminal) ---")
     if warning:
-        print(f"\n{warning}", file=sys.stderr)
-
-
-def _parse_datasheet(raw: dict) -> Datasheet:
-    pins = [Pin(**p) for p in raw.get("pins", [])]
-
-    def parse_specs(items: list) -> list[Spec]:
-        return [Spec(**s) for s in items]
-
-    truth_tables = [
-        TruthTable(
-            name=tt["name"],
-            rows=[TruthTableRow(**r) for r in tt.get("rows", [])],
-        )
-        for tt in raw.get("truth_tables", [])
-    ]
-
-    pkg_raw = raw.get("package")
-    package = Package(**pkg_raw) if pkg_raw else None
-
-    return Datasheet(
-        part_number=raw.get("part_number", ""),
-        manufacturer=raw.get("manufacturer", ""),
-        description=raw.get("description", ""),
-        features=raw.get("features", []),
-        pins=pins,
-        absolute_max_ratings=parse_specs(raw.get("absolute_max_ratings", [])),
-        specs=parse_specs(raw.get("specs", [])),
-        package=package,
-        truth_tables=truth_tables,
-        typical_circuits=[Circuit(**c) for c in raw.get("typical_circuits", [])],
-    )
+        print(f"\nNote: {warning}", file=sys.stderr)
 
 
 def cmd_record(json_str: str) -> None:
-    """Validate structured JSON and render as Markdown, print to stdout."""
     try:
         raw = json.loads(json_str)
     except json.JSONDecodeError as exc:
         print(f"Error: Invalid JSON — {exc}", file=sys.stderr)
         sys.exit(1)
-
     try:
-        ds = _parse_datasheet(raw)
+        ds = Datasheet.model_validate(raw)
     except Exception as exc:
         print(f"Error: Schema validation failed — {exc}", file=sys.stderr)
         sys.exit(1)
-
     print(render(ds))
 
 
@@ -169,9 +297,7 @@ def main() -> None:
     if len(sys.argv) < 3:
         print(__doc__)
         sys.exit(1)
-
     command = sys.argv[1]
-
     if command == "read":
         cmd_read(sys.argv[2])
     elif command == "record":
