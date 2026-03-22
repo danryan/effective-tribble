@@ -8,54 +8,57 @@ When the user provides a path to a PDF datasheet and asks about the component �
 
 ## Workflow
 
-### Step 1 — Read the PDF
+Call `extract_datasheet` with the PDF path:
 
 ```
-read_datasheet(path="/path/to/component.pdf")
+extract_datasheet(path="/path/to/component.pdf")
 ```
 
-Returns page text, Markdown-formatted tables, and images for diagram/schematic pages. Read all content carefully.
+Read all returned content carefully — text pages, Markdown tables, and any diagram images — then produce structured Markdown output in the format below.
 
-### Step 2 — Record the extraction
+## Output format
 
+```markdown
+# PART_NUMBER — Manufacturer
+
+## Description
+[one paragraph]
+
+## Features
+- feature one
+- feature two
+
+## Pin Configuration
+| Pin | Name | Type | Description |
+|-----|------|------|-------------|
+
+## Absolute Maximum Ratings
+| Parameter | Min | Typ | Max | Unit | Conditions |
+|-----------|-----|-----|-----|------|------------|
+
+## Electrical Characteristics
+| Parameter | Min | Typ | Max | Unit | Conditions |
+|-----------|-----|-----|-----|------|------------|
+
+## Truth Tables
+### Table Name
+| A | B | Y |
+|---|---|---|
+
+## Package Information
+**Package:** SOIC-8
+**Dimensions:** ...
+**θJA:** ... °C/W
+
+## Typical Application Circuits
+### Circuit Name
+[description of schematic]
 ```
-record_datasheet(data='{ ... }')
-```
 
-Pass a JSON string with everything you extracted. Pydantic validates it and returns consistent Markdown. **Always call this — never format the output yourself.**
+## Field guidance
 
-## JSON schema
-
-```json
-{
-  "part_number": "LM358",
-  "manufacturer": "Texas Instruments",
-  "description": "Dual operational amplifier...",
-  "features": ["Internally frequency compensated", "Wide supply voltage range: 3V to 32V"],
-  "pins": [
-    { "number": "1", "name": "OUT1", "type": "O", "description": "Output of amplifier 1" }
-  ],
-  "absolute_max_ratings": [
-    { "parameter": "Supply Voltage", "min": null, "typ": null, "max": "36", "unit": "V", "conditions": null }
-  ],
-  "specs": [
-    { "parameter": "Input Offset Voltage", "min": null, "typ": "2", "max": "7", "unit": "mV", "conditions": "VS=5V" }
-  ],
-  "package": { "name": "SOIC-8", "dimensions": "4.9mm x 3.9mm", "theta_ja": "125" },
-  "truth_tables": [
-    { "name": "Logic Function Table", "rows": [{ "inputs": {"A": "L"}, "outputs": {"Y": "H"}, "notes": null }] }
-  ],
-  "typical_circuits": [
-    { "name": "Typical Application", "description": "Non-inverting amplifier with R1/R2 feedback..." }
-  ]
-}
-```
-
-## Field notes
-
-- **pin.type**: `"I"`, `"O"`, `"I/O"`, `"Power"`, `"GND"`, or `"NC"`
-- **specs vs absolute_max_ratings**: Absolute max = never-exceed limits; specs = operating conditions
-- **typical_circuits**: For diagram image pages, describe the circuit in plain English
-- **All numeric values as strings**: `"3.3"` not `3.3`
-- **Missing sections**: `[]` for lists, `null` for scalars
-- If `read_datasheet` returns a truncation warning, mention it and offer to re-run with higher `max_pages`
+- **pin.type**: `I`, `O`, `I/O`, `Power`, `GND`, or `NC`
+- **specs vs absolute max**: Absolute max = never-exceed limits; specs = operating conditions
+- **diagram pages**: describe the circuit in plain English under Typical Application Circuits
+- Omit sections not found in the datasheet
+- If a truncation warning is returned, mention it and offer to re-run with higher `max_pages`

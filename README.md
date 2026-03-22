@@ -1,14 +1,11 @@
 # Datasheets Extraction Tool
 
-Extracts structured information from electronic component datasheet PDFs and renders consistent Markdown. Works as a standalone CLI or as an MCP server for Claude Code.
+Extracts structured information from electronic component datasheet PDFs.
+
+- **MCP server** — returns PDF content (text, tables, diagram images) for Claude to interpret and format
+- **CLI** — standalone heuristic extraction using pdfplumber, no AI required
 
 **No Anthropic API key required.**
-
-## How it works
-
-1. `read` / `read_datasheet` — pdfplumber extracts text and Markdown tables; PyMuPDF renders diagram pages as images
-2. Claude reads the content and extracts all component information
-3. `record` / `record_datasheet` — Pydantic validates Claude's structured JSON, renders consistent Markdown
 
 ## Requirements
 
@@ -22,58 +19,9 @@ cd effective-tribble
 pip install -e .
 ```
 
-## Usage without MCP (Claude Code + Bash tool)
+## MCP server (Claude Code)
 
-If you'd rather not configure an MCP server, Claude Code can run the CLI directly via its Bash tool. Tell Claude:
-
-> "Use `python /path/to/datasheet.py` to extract `/path/to/component.pdf`"
-
-Or install the skill (`cp skills/extract-datasheet.md ~/.claude/skills/`) and update the path at the top — Claude will handle the two-step workflow automatically whenever you ask about a datasheet.
-
-### Step 1 — extract text and tables
-
-```bash
-python datasheet.py read /path/to/component.pdf
-```
-
-Prints extracted text and Markdown-formatted tables to stdout. Diagram/schematic pages are noted but skipped (images can't be printed to terminal — use MCP for those).
-
-### Step 2 — validate and render
-
-```bash
-python datasheet.py record '<json>'
-```
-
-Pass a JSON string with the extracted data. Pydantic validates it and prints formatted Markdown to stdout.
-
-**Example:**
-```bash
-python datasheet.py record '{
-  "part_number": "LM358",
-  "manufacturer": "Texas Instruments",
-  "description": "Dual general-purpose operational amplifier",
-  "features": ["Wide supply voltage range", "Low supply current drain"],
-  "pins": [{"number": "1", "name": "OUT1", "type": "O", "description": "Output 1"}],
-  "absolute_max_ratings": [],
-  "specs": [],
-  "package": {"name": "SOIC-8", "dimensions": null, "theta_ja": null},
-  "truth_tables": [],
-  "typical_circuits": []
-}'
-```
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATASHEET_MAX_PAGES` | `20` | Max relevant pages to process (0 = unlimited) |
-| `DATASHEET_DPI` | `150` | DPI for rendering diagram pages as images (MCP only) |
-
-> **Note:** Diagram page images are only available via the MCP server. The CLI notes which pages are diagrams but cannot render them.
-
-## MCP server setup (Claude Code)
-
-Add to `~/.claude/settings.json`:
+### 1. Add to `~/.claude/settings.json`
 
 ```json
 {
@@ -92,13 +40,36 @@ Add to `~/.claude/settings.json`:
 
 Restart Claude Code after saving.
 
-## Install the Claude skill
+### 2. Install the skill
 
 ```bash
 cp skills/extract-datasheet.md ~/.claude/skills/
 ```
 
-Claude will then automatically run the two-step workflow when you ask about a component PDF.
+Claude will automatically call `extract_datasheet` and produce structured Markdown when you ask about a component PDF.
+
+### Tool
+
+**`extract_datasheet(path, max_pages=20)`** — returns page text, Markdown-formatted tables, and images for diagram/schematic pages.
+
+## CLI (standalone, no AI)
+
+Uses pdfplumber heuristics to extract what it can — pinout tables, spec tables, bullet-point features, part number. No AI, best-effort.
+
+```bash
+python datasheet.py /path/to/component.pdf
+```
+
+Prints formatted Markdown to stdout.
+
+> Diagram/schematic pages are skipped in CLI mode. Use the MCP server for full extraction including schematics.
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATASHEET_MAX_PAGES` | `20` | Max relevant pages to process (0 = unlimited) |
+| `DATASHEET_DPI` | `150` | DPI for rendering diagram pages as images (MCP only) |
 
 ## Output format
 
