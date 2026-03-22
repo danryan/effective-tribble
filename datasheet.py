@@ -15,8 +15,6 @@ import json
 import os
 import re
 import sys
-from io import BytesIO
-
 import pdfplumber
 import pymupdf
 from pydantic import BaseModel, Field
@@ -254,7 +252,7 @@ def _extract_raw_pages(
             page     = doc[idx]
             mat      = pymupdf.Matrix(dpi / 72, dpi / 72)
             pix      = page.get_pixmap(matrix=mat, alpha=False)
-            img_data = base64.standard_b64encode(BytesIO(pix.tobytes("png")).getvalue()).decode()
+            img_data = base64.standard_b64encode(pix.tobytes("png")).decode()
 
         raw_pages.append({
             "page":       idx + 1,
@@ -385,7 +383,7 @@ def _heuristic_extract(raw_pages: list[dict]) -> dict:
         # Part number: first token on early pages matching a component ID pattern
         if not result["part_number"] and page["page"] <= 2:
             for line in lines[:8]:
-                m = re.match(r'^([A-Z]{2,}[\w\-]{1,}[0-9][\w\-\/]*)', line)
+                m = re.match(r'^([A-Z]{2,}[\w\-]{1,}[0-9][\w\-\/]*|[0-9]{2,}[A-Z]+[\w\-\/]*)', line)
                 if m:
                     result["part_number"] = m.group(1)
                     break
