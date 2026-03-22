@@ -18,6 +18,9 @@ dependencies = [
 datasheet = "datasheet:main"
 datasheets-server = "server:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["*.py"]
