@@ -5,16 +5,18 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "datasheets-extraction-tool"
 version = "0.1.0"
-description = "MCP server for extracting structured data from electronic component datasheets"
+description = "CLI and MCP server for extracting structured data from electronic component datasheets"
 requires-python = ">=3.11"
 dependencies = [
-    "pdfplumber>=0.11.0",
-    "pymupdf>=1.24.0",
-    "pydantic>=2.0.0",
+    "pdfplumber>=0.11.9",
+    "pymupdf>=1.27.2",
+    "pydantic>=2.12.5",
+    "mcp[cli]>=1.26.0,<2",
 ]
 
 [project.scripts]
 datasheet = "datasheet:main"
+datasheets-server = "server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
