@@ -22,14 +22,44 @@ cd effective-tribble
 pip install -e .
 ```
 
-## CLI usage
+## Usage without MCP (Claude Code + Bash tool)
+
+If you'd rather not configure an MCP server, Claude Code can run the CLI directly via its Bash tool. Tell Claude:
+
+> "Use `python /path/to/datasheet.py` to extract `/path/to/component.pdf`"
+
+Or install the skill (`cp skills/extract-datasheet.md ~/.claude/skills/`) and update the path at the top — Claude will handle the two-step workflow automatically whenever you ask about a datasheet.
+
+### Step 1 — extract text and tables
 
 ```bash
-# Step 1 — extract text and tables from PDF
 python datasheet.py read /path/to/component.pdf
+```
 
-# Step 2 — validate and render structured extraction
-python datasheet.py record '{"part_number": "LM358", "manufacturer": "TI", ...}'
+Prints extracted text and Markdown-formatted tables to stdout. Diagram/schematic pages are noted but skipped (images can't be printed to terminal — use MCP for those).
+
+### Step 2 — validate and render
+
+```bash
+python datasheet.py record '<json>'
+```
+
+Pass a JSON string with the extracted data. Pydantic validates it and prints formatted Markdown to stdout.
+
+**Example:**
+```bash
+python datasheet.py record '{
+  "part_number": "LM358",
+  "manufacturer": "Texas Instruments",
+  "description": "Dual general-purpose operational amplifier",
+  "features": ["Wide supply voltage range", "Low supply current drain"],
+  "pins": [{"number": "1", "name": "OUT1", "type": "O", "description": "Output 1"}],
+  "absolute_max_ratings": [],
+  "specs": [],
+  "package": {"name": "SOIC-8", "dimensions": null, "theta_ja": null},
+  "truth_tables": [],
+  "typical_circuits": []
+}'
 ```
 
 ### Environment variables
@@ -37,7 +67,9 @@ python datasheet.py record '{"part_number": "LM358", "manufacturer": "TI", ...}'
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATASHEET_MAX_PAGES` | `20` | Max relevant pages to process (0 = unlimited) |
-| `DATASHEET_DPI` | `150` | DPI for rendering diagram pages as images |
+| `DATASHEET_DPI` | `150` | DPI for rendering diagram pages as images (MCP only) |
+
+> **Note:** Diagram page images are only available via the MCP server. The CLI notes which pages are diagrams but cannot render them.
 
 ## MCP server setup (Claude Code)
 
