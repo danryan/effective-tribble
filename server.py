@@ -1,163 +1,144 @@
 """
 Datasheets Extraction MCP Server
 
-Exposes two tools:
-  - extract_datasheet: full extraction → Markdown
-  - extract_datasheet_section: targeted section extraction → Markdown
+Two tools:
+  - read_datasheet: mechanical PDF reading → text + images for Claude to interpret
+  - record_datasheet: accepts Claude's structured extraction → validates + renders Markdown
 """
 from __future__ import annotations
 
+import json
 import os
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
-import extractor
+import pdf_reader
 import renderer
+from schema import (
+    Circuit,
+    Datasheet,
+    Package,
+    Pin,
+    Spec,
+    TruthTable,
+    TruthTableRow,
+)
 
 DEFAULT_MAX_PAGES = int(os.environ.get("DATASHEET_MAX_PAGES", "20"))
 
 mcp = FastMCP(
     "datasheets",
     instructions=(
-        "Use extract_datasheet to extract structured information from an electronic "
-        "component PDF datasheet and receive clean Markdown output. "
-        "Use extract_datasheet_section for faster targeted extraction of a specific section."
+        "Use read_datasheet to load a component datasheet PDF. "
+        "After reading the content, extract all information and call record_datasheet "
+        "with the structured data to produce validated Markdown output."
     ),
 )
 
-VALID_SECTIONS = frozenset({
-    "specs", "abs_max", "pinout", "description", "features",
-    "circuits", "package", "truth_tables",
-})
-
-# Map section names to extractor page signal keys
-SECTION_TO_SIGNAL: dict[str, str | None] = {
-    "specs": "specs",
-    "abs_max": "abs_max",
-    "pinout": "pinout",
-    "circuits": "circuit",
-    "package": "package",
-    "truth_tables": "truth_table",
-    "description": None,  # header pages only
-    "features": None,     # header pages only
-}
-
 
 @mcp.tool()
-def extract_datasheet(path: str, max_pages: int = DEFAULT_MAX_PAGES) -> str:
+def read_datasheet(path: str, max_pages: int = DEFAULT_MAX_PAGES) -> list:
     """
-    Extract all structured information from an electronic component datasheet PDF
-    and return it as formatted Markdown.
+    Read an electronic component datasheet PDF and return its content
+    (text, Markdown-formatted tables, and diagram images) for extraction.
+
+    After calling this tool, extract all component information from the returned
+    content and call record_datasheet with the structured data.
 
     Args:
         path: Absolute or relative path to the PDF file.
-        max_pages: Maximum number of pages to send to Claude vision (0 = unlimited).
-                   Override the default set by DATASHEET_MAX_PAGES env var.
+        max_pages: Maximum number of relevant pages to process (0 = unlimited).
+                   Configurable via DATASHEET_MAX_PAGES env var.
     """
     try:
-        ds, warning = extractor.extract(path, section_filter=None, max_pages=max_pages)
-        return renderer.render(ds, truncation_warning=warning)
+        items, warning = pdf_reader.read_pdf(path, max_pages=max_pages)
     except FileNotFoundError:
-        return f"Error: File not found: {path}"
+        return [f"Error: File not found: {path}"]
     except Exception as exc:
-        return f"Error extracting datasheet: {exc}"
+        return [f"Error reading PDF: {exc}"]
 
+    result = []
+    for item in items:
+        if item["type"] == "text":
+            result.append(item["text"])
+        elif item["type"] == "image":
+            result.append(f"--- Page {item['page']} [{item['label']}] (diagram/schematic) ---")
+            result.append(Image(data=item["data"], format="png"))
 
-@mcp.tool()
-def extract_datasheet_section(
-    path: str,
-    section: str,
-    max_pages: int = DEFAULT_MAX_PAGES,
-) -> str:
-    """
-    Extract a specific section from an electronic component datasheet PDF.
-    Faster than full extraction because only relevant pages are processed.
-
-    Args:
-        path: Absolute or relative path to the PDF file.
-        section: One of: specs, abs_max, pinout, description, features,
-                 circuits, package, truth_tables
-        max_pages: Maximum number of pages to send to Claude vision (0 = unlimited).
-    """
-    if section not in VALID_SECTIONS:
-        return (
-            f"Error: Invalid section '{section}'. "
-            f"Valid sections: {', '.join(sorted(VALID_SECTIONS))}"
-        )
-
-    signal = SECTION_TO_SIGNAL.get(section)
-
-    try:
-        ds, warning = extractor.extract(path, section_filter=signal, max_pages=max_pages)
-    except FileNotFoundError:
-        return f"Error: File not found: {path}"
-    except Exception as exc:
-        return f"Error extracting datasheet section: {exc}"
-
-    # Render only the requested section
-    from renderer import _spec_table, _truth_table_md
-
-    lines: list[str] = []
-
-    if section == "description":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Description\n")
-        lines.append(ds.description or "*(not found)*")
-
-    elif section == "features":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Features\n")
-        if ds.features:
-            lines.extend(f"- {f}" for f in ds.features)
-        else:
-            lines.append("*(not found)*")
-
-    elif section == "pinout":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Pin Configuration\n")
-        if ds.pins:
-            lines.append("| Pin | Name | Type | Description |")
-            lines.append("|-----|------|------|-------------|")
-            for p in ds.pins:
-                lines.append(f"| {p.number} | {p.name} | {p.type} | {p.description} |")
-        else:
-            lines.append("*(not found)*")
-
-    elif section == "abs_max":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Absolute Maximum Ratings\n")
-        lines.append(_spec_table(ds.absolute_max_ratings) or "*(not found)*")
-
-    elif section == "specs":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Electrical Characteristics\n")
-        lines.append(_spec_table(ds.specs) or "*(not found)*")
-
-    elif section == "truth_tables":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Truth Tables\n")
-        if ds.truth_tables:
-            lines.extend(_truth_table_md(tt) for tt in ds.truth_tables)
-        else:
-            lines.append("*(not found)*")
-
-    elif section == "package":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Package Information\n")
-        if ds.package:
-            lines.append(f"**Package:** {ds.package.name}")
-            if ds.package.dimensions:
-                lines.append(f"\n**Dimensions:** {ds.package.dimensions}")
-            if ds.package.theta_ja:
-                lines.append(f"\n**θJA:** {ds.package.theta_ja} °C/W")
-        else:
-            lines.append("*(not found)*")
-
-    elif section == "circuits":
-        lines.append(f"# {ds.part_number or 'Unknown'} — Typical Application Circuits\n")
-        if ds.typical_circuits:
-            for c in ds.typical_circuits:
-                lines.append(f"### {c.name}\n\n{c.description}")
-        else:
-            lines.append("*(not found)*")
-
-    result = "\n".join(lines)
     if warning:
-        result += f"\n\n> ⚠️ {warning}"
+        result.append(f"\n> ⚠️ {warning}")
+
     return result
+
+
+@mcp.tool()
+def record_datasheet(data: str) -> str:
+    """
+    Validate and render extracted datasheet data as formatted Markdown.
+
+    Call this after read_datasheet once you have extracted all component information.
+    Pass a JSON string conforming to the Datasheet schema.
+
+    Schema:
+      {
+        "part_number": str,
+        "manufacturer": str,
+        "description": str,
+        "features": [str, ...],
+        "pins": [{"number": str, "name": str, "type": str, "description": str}, ...],
+        "absolute_max_ratings": [{"parameter": str, "min": str|null, "typ": str|null,
+                                   "max": str|null, "unit": str|null, "conditions": str|null}, ...],
+        "specs": [same as absolute_max_ratings, ...],
+        "package": {"name": str, "dimensions": str|null, "theta_ja": str|null} | null,
+        "truth_tables": [{"name": str, "rows": [{"inputs": {}, "outputs": {}, "notes": str|null}]}, ...],
+        "typical_circuits": [{"name": str, "description": str}, ...]
+      }
+
+    Args:
+        data: JSON string with extracted datasheet fields.
+    """
+    try:
+        raw = json.loads(data)
+    except json.JSONDecodeError as exc:
+        return f"Error: Invalid JSON — {exc}"
+
+    try:
+        ds = _parse_datasheet(raw)
+    except Exception as exc:
+        return f"Error: Schema validation failed — {exc}"
+
+    return renderer.render(ds)
+
+
+def _parse_datasheet(raw: dict) -> Datasheet:
+    pins = [Pin(**p) for p in raw.get("pins", [])]
+
+    def parse_specs(items: list) -> list[Spec]:
+        return [Spec(**s) for s in items]
+
+    truth_tables = [
+        TruthTable(
+            name=tt["name"],
+            rows=[TruthTableRow(**r) for r in tt.get("rows", [])],
+        )
+        for tt in raw.get("truth_tables", [])
+    ]
+
+    pkg_raw = raw.get("package")
+    package = Package(**pkg_raw) if pkg_raw else None
+
+    return Datasheet(
+        part_number=raw.get("part_number", ""),
+        manufacturer=raw.get("manufacturer", ""),
+        description=raw.get("description", ""),
+        features=raw.get("features", []),
+        pins=pins,
+        absolute_max_ratings=parse_specs(raw.get("absolute_max_ratings", [])),
+        specs=parse_specs(raw.get("specs", [])),
+        package=package,
+        truth_tables=truth_tables,
+        typical_circuits=[Circuit(**c) for c in raw.get("typical_circuits", [])],
+    )
 
 
 def main() -> None:

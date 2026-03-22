@@ -1,12 +1,20 @@
 # Datasheets Extraction Tool
 
-An MCP server that extracts structured information from electronic component datasheet PDFs and returns clean Markdown. Uses a hybrid approach: pdfplumber for fast text extraction and Claude vision for complex tables, pinouts, and schematics.
+An MCP server for extracting structured information from electronic component datasheet PDFs. Returns clean, consistent Markdown.
+
+**No Anthropic API key required** — Claude Code does the interpretation natively. The server handles only the mechanical PDF work.
+
+## How it works
+
+1. `read_datasheet` opens the PDF, extracts text and Markdown-formatted tables (pdfplumber), and renders diagram/schematic pages as images (PyMuPDF)
+2. Claude reads the returned content and extracts all component information
+3. `record_datasheet` validates Claude's structured JSON against the Pydantic schema and renders consistent Markdown
 
 ## What it extracts
 
 - Part number, manufacturer, description
 - Feature list
-- Pin configuration (pinout table)
+- Pin configuration table
 - Absolute maximum ratings
 - Electrical characteristics (specs table)
 - Truth tables / logic tables
@@ -16,7 +24,6 @@ An MCP server that extracts structured information from electronic component dat
 ## Requirements
 
 - Python 3.11+
-- An Anthropic API key (`ANTHROPIC_API_KEY`)
 
 ## Installation
 
@@ -26,9 +33,9 @@ cd effective-tribble
 pip install -e .
 ```
 
-## MCP Server Setup (Claude Code)
+## MCP Server Setup
 
-Add the server to your Claude Code MCP configuration. Edit `~/.claude/settings.json` (user-level) or `.claude/settings.json` (project-level):
+Add to your Claude Code MCP config. Edit `~/.claude/settings.json` (user-level) or `.claude/settings.json` (project-level):
 
 ```json
 {
@@ -37,80 +44,58 @@ Add the server to your Claude Code MCP configuration. Edit `~/.claude/settings.j
       "command": "python",
       "args": ["/absolute/path/to/effective-tribble/server.py"],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
         "DATASHEET_MAX_PAGES": "20",
-        "DATASHEET_DPI": "150",
-        "DATASHEET_MODEL": "claude-sonnet-4-6"
+        "DATASHEET_DPI": "150"
       }
     }
   }
 }
 ```
 
-After saving, restart Claude Code. You should see `datasheets` in your MCP servers list.
+Restart Claude Code after saving.
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | *(required)* | Your Anthropic API key |
-| `DATASHEET_MAX_PAGES` | `20` | Default page cap for Claude vision calls |
-| `DATASHEET_DPI` | `150` | PDF render resolution (increase for dense tables) |
-| `DATASHEET_MODEL` | `claude-sonnet-4-6` | Claude model to use for extraction |
+| `DATASHEET_MAX_PAGES` | `20` | Default page cap (0 = unlimited) |
+| `DATASHEET_DPI` | `150` | PDF render DPI for diagram pages |
 
-## Available MCP Tools
+## MCP Tools
 
-### `extract_datasheet`
-
-Full extraction — all sections from the PDF.
+### `read_datasheet`
+Reads the PDF and returns page content (text, tables, images) for Claude to interpret.
 
 ```
-extract_datasheet(path: str, max_pages: int = 20) -> str
+read_datasheet(path: str, max_pages: int = 20)
 ```
 
-### `extract_datasheet_section`
-
-Targeted extraction — only a specific section. Faster and cheaper.
+### `record_datasheet`
+Validates Claude's structured extraction and renders it as Markdown.
 
 ```
-extract_datasheet_section(path: str, section: str, max_pages: int = 20) -> str
+record_datasheet(data: str)  # JSON string matching the Datasheet schema
 ```
-
-Valid `section` values: `pinout`, `specs`, `abs_max`, `features`, `description`, `circuits`, `package`, `truth_tables`
 
 ## Installing the Claude Skill
 
-The `skills/extract-datasheet.md` file teaches Claude when and how to use this tool. Copy it to your personal Claude skills directory:
+The skill file tells Claude when and how to use both tools. Copy it to your personal Claude skills directory:
 
 ```bash
 cp skills/extract-datasheet.md ~/.claude/skills/
 ```
 
-Once installed, Claude will automatically invoke the MCP tool when you hand it a PDF and ask about a component.
+Once installed, Claude automatically invokes the two-step workflow when you ask about a component PDF.
 
-## Usage example
+## Usage
 
-In Claude Code (after MCP server is configured):
+In Claude Code (after MCP server is configured and skill is installed):
 
 > "Extract the datasheet at /path/to/TPS62840.pdf"
-
-Or more specifically:
-
 > "What's the pinout of /path/to/LM358.pdf?"
-
-## Running the server manually (for testing)
-
-```bash
-# Start the server in stdio mode (as Claude Code expects)
-python server.py
-
-# Or using the mcp CLI
-mcp run server.py
-```
+> "Summarize /path/to/STM32F4.pdf"
 
 ## Output format
-
-The tool returns Markdown with this structure (sections omitted if not found):
 
 ```markdown
 # PART_NUMBER — Manufacturer
@@ -123,4 +108,14 @@ The tool returns Markdown with this structure (sections omitted if not found):
 ## Truth Tables
 ## Package Information
 ## Typical Application Circuits
+```
+
+Sections not found in the datasheet are omitted.
+
+## Running the server manually
+
+```bash
+python server.py
+# or
+mcp run server.py
 ```
