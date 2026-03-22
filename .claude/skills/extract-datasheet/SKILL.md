@@ -19,7 +19,7 @@ Call `extract_datasheet` with the PDF path:
 extract_datasheet(path="/path/to/component.pdf")
 ```
 
-Read all returned content carefully — text pages, Markdown tables, and any diagram images — then produce structured Markdown output in the format below. Write the output to a file named `PART_NUMBER.md` in the current working directory (e.g., `AS2164.md`). Use the primary part number from the datasheet as the filename.
+Read all returned content carefully — text pages, Markdown tables, and any diagram images — then produce structured Markdown output in the format below. Write the output to a file named `PART_NUMBER.md` in the `datasheets/extracted/` directory (e.g., `datasheets/extracted/AS2164.md`). Create the directory if it doesn't exist. Use the primary part number from the datasheet as the filename.
 
 ## Output format
 
