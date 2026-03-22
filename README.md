@@ -1,25 +1,10 @@
 # Datasheets Extraction Tool
 
-An MCP server for extracting structured information from electronic component datasheet PDFs. Returns clean, consistent Markdown.
+A CLI tool for extracting structured information from electronic component datasheet PDFs. Designed for use with Claude Code.
 
-**No Anthropic API key required** — Claude Code does the interpretation natively. The server handles only the mechanical PDF work.
+Uses pdfplumber for clean text and Markdown table extraction, Pydantic for schema validation, and outputs consistent Markdown.
 
-## How it works
-
-1. `read_datasheet` opens the PDF, extracts text and Markdown-formatted tables (pdfplumber), and renders diagram/schematic pages as images (PyMuPDF)
-2. Claude reads the returned content and extracts all component information
-3. `record_datasheet` validates Claude's structured JSON against the Pydantic schema and renders consistent Markdown
-
-## What it extracts
-
-- Part number, manufacturer, description
-- Feature list
-- Pin configuration table
-- Absolute maximum ratings
-- Electrical characteristics (specs table)
-- Truth tables / logic tables
-- Package information (type, dimensions, thermal resistance)
-- Typical application circuit descriptions
+**No API key required.**
 
 ## Requirements
 
@@ -33,67 +18,73 @@ cd effective-tribble
 pip install -e .
 ```
 
-## MCP Server Setup
+## Usage
 
-Add to your Claude Code MCP config. Edit `~/.claude/settings.json` (user-level) or `.claude/settings.json` (project-level):
+### Step 1 — Read a PDF
 
-```json
-{
-  "mcpServers": {
-    "datasheets": {
-      "command": "python",
-      "args": ["/absolute/path/to/effective-tribble/server.py"],
-      "env": {
-        "DATASHEET_MAX_PAGES": "20",
-        "DATASHEET_DPI": "150"
-      }
-    }
-  }
-}
+```bash
+python datasheet.py read /path/to/component.pdf
 ```
 
-Restart Claude Code after saving.
+Outputs extracted text and Markdown-formatted tables from relevant pages to stdout. Diagram/schematic pages are noted but not extracted (no text to extract).
+
+### Step 2 — Validate and render
+
+```bash
+python datasheet.py record '<json>'
+```
+
+Pass a JSON string matching the schema below. Pydantic validates it and outputs formatted Markdown.
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATASHEET_MAX_PAGES` | `20` | Default page cap (0 = unlimited) |
-| `DATASHEET_DPI` | `150` | PDF render DPI for diagram pages |
+| `DATASHEET_MAX_PAGES` | `20` | Max relevant pages to process (0 = unlimited) |
+| `DATASHEET_DPI` | `150` | Render DPI (currently unused; reserved for future image support) |
 
-## MCP Tools
+## Schema
 
-### `read_datasheet`
-Reads the PDF and returns page content (text, tables, images) for Claude to interpret.
-
+```json
+{
+  "part_number": "string",
+  "manufacturer": "string",
+  "description": "string",
+  "features": ["string"],
+  "pins": [
+    { "number": "string", "name": "string", "type": "string", "description": "string" }
+  ],
+  "absolute_max_ratings": [
+    { "parameter": "string", "min": "string|null", "typ": "string|null",
+      "max": "string|null", "unit": "string|null", "conditions": "string|null" }
+  ],
+  "specs": ["same as absolute_max_ratings"],
+  "package": { "name": "string", "dimensions": "string|null", "theta_ja": "string|null" },
+  "truth_tables": [
+    { "name": "string", "rows": [{ "inputs": {}, "outputs": {}, "notes": "string|null" }] }
+  ],
+  "typical_circuits": [
+    { "name": "string", "description": "string" }
+  ]
+}
 ```
-read_datasheet(path: str, max_pages: int = 20)
-```
 
-### `record_datasheet`
-Validates Claude's structured extraction and renders it as Markdown.
+## Installing the Claude skill
 
-```
-record_datasheet(data: str)  # JSON string matching the Datasheet schema
-```
-
-## Installing the Claude Skill
-
-The skill file tells Claude when and how to use both tools. Copy it to your personal Claude skills directory:
+The skill file tells Claude the two-step workflow. Copy it to your personal Claude skills directory:
 
 ```bash
 cp skills/extract-datasheet.md ~/.claude/skills/
 ```
 
-Once installed, Claude automatically invokes the two-step workflow when you ask about a component PDF.
+Then update the path in the skill file to match where you installed this tool:
 
-## Usage
+```bash
+# Edit the script path in the skill file
+sed -i 's|/path/to/datasheet.py|'$(pwd)'/datasheet.py|g' ~/.claude/skills/extract-datasheet.md
+```
 
-In Claude Code (after MCP server is configured and skill is installed):
-
-> "Extract the datasheet at /path/to/TPS62840.pdf"
-> "What's the pinout of /path/to/LM358.pdf?"
-> "Summarize /path/to/STM32F4.pdf"
+Once installed, Claude automatically runs the two-step workflow when you ask about a component PDF.
 
 ## Output format
 
@@ -111,11 +102,3 @@ In Claude Code (after MCP server is configured and skill is installed):
 ```
 
 Sections not found in the datasheet are omitted.
-
-## Running the server manually
-
-```bash
-python server.py
-# or
-mcp run server.py
-```
